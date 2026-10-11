@@ -1,0 +1,36 @@
+# toll example configuration. Every field is optional; values shown are
+# defaults unless noted. ${VAR} is replaced with the environment variable.
+
+server:
+  listen: ":8080"
+  instance_id: ${HOSTNAME}              # recorded in every event (default: hostname)
+  # auth_token: ${TOLL_AUTH_TOKEN}      # if set, callers must send X-Toll-Auth
+  max_request_body: 32MiB
+  shutdown_grace: 60s
+  read_header_timeout: 10s
+  upstream_response_header_timeout: 10m
+
+# openai, anthropic, gemini and xai are built in. Entries here override them
+# or add OpenAI-compatible upstreams, served under /<name>/.
+providers:
+  # openai:    { upstream: https://api.openai.com }
+  # anthropic: { upstream: https://api.anthropic.com }
+  # gemini:    { upstream: https://generativelanguage.googleapis.com }
+  # xai:       { upstream: https://api.x.ai, format: openai }
+  # local-vllm:
+  #   upstream: http://vllm.internal:8000
+  #   format: openai
+
+metering:
+  require_user: false                   # true: reject requests with no user id (400)
+  inject_stream_usage: true             # add stream_options.include_usage to OpenAI-format streams
+  metric_tags: []                       # X-Toll-Tags keys promoted to Prometheus labels, e.g. [feature]
+
+key_aliases: {}                         # key_id -> readable name, e.g. { k_3f9a1c07b2e4: prod-chat }
+
+events:
+  output: file                          # file | stdout
+  dir: ./events
+  filename: "events-{instance}-{time}.jsonl"
+  rotate: 1h
+  on_write_error: fail_open             # fail_open | fail_closed

@@ -1,0 +1,28 @@
+# Binaries
+/toll
+/dist/
+*.exe
+*.test
+
+# Test and coverage output
+*.out
+coverage.*
+
+# toll runtime output
+/events/
+*.jsonl
+
+# Local config and secrets
+/toll.yaml
+.env
+.env.*
+
+# Go workspace
+go.work
+go.work.sum
+
+# OS and editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
