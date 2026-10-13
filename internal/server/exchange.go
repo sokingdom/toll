@@ -82,6 +82,7 @@ func (x *exchange) serve(rest, rawRest string) {
 		x.reject(http.StatusServiceUnavailable, "event_write_failed", "toll could not record the request")
 		return
 	}
+	x.s.recorder.Started(started, x.start)
 
 	x.s.metrics.Inflight(x.rt.name, 1)
 	defer x.s.metrics.Inflight(x.rt.name, -1)
@@ -332,6 +333,7 @@ func (x *exchange) finish() {
 		c.TTFBMS = &ms
 		ttfb = x.firstByte.Sub(x.start).Seconds()
 	}
+	x.s.recorder.Completed(c, x.start)
 	_ = x.s.writeEvent(events.TypeCompleted, c)
 
 	x.s.metrics.Observe(metrics.Request{
@@ -362,6 +364,7 @@ func (x *exchange) reject(status int, code, message string) {
 	}
 	c.Type, c.TS = events.TypeCompleted, events.Timestamp(end)
 	c.UsageInjected = false
+	x.s.recorder.Completed(c, x.start)
 	_ = x.s.writeEvent(events.TypeCompleted, c)
 	x.s.metrics.Observe(metrics.Request{
 		Provider: x.rt.name,

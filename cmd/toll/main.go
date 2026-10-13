@@ -13,13 +13,16 @@ import (
 	"os"
 	"os/signal"
 	"reflect"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/sokingdom/toll/internal/admin"
 	"github.com/sokingdom/toll/internal/config"
 	"github.com/sokingdom/toll/internal/events"
 	"github.com/sokingdom/toll/internal/metrics"
 	"github.com/sokingdom/toll/internal/server"
+	"github.com/sokingdom/toll/internal/store"
 )
 
 func main() {
@@ -56,15 +59,25 @@ func run() error {
 	}
 	defer writer.Close()
 
-	srv, err := server.New(server.Options{
-		Config:  cfg,
-		Events:  writer,
-		Metrics: metrics.New(cfg.Metering.MetricTags),
-		Logger:  log,
-	})
+	// The dashboard store only exists to serve the admin listener.
+	var st *store.Store
+	opts := server.Options{Config: cfg, Events: writer, Metrics: metrics.New(cfg.Metering.MetricTags), Logger: log}
+	if cfg.Dashboard.IsEnabled() && cfg.Server.AdminAddr() != "" {
+		st, err = store.Open(cfg.Dashboard.Path, time.Duration(cfg.Dashboard.Retention), log)
+		if err != nil {
+			return fmt.Errorf("dashboard: %w", err)
+		}
+		// Closed after the proxy has drained, so the last completions are flushed.
+		defer st.Close()
+		opts.Recorder = st
+	}
+	srv, err := server.New(opts)
 	if err != nil {
 		return err
 	}
+
+	var current atomic.Pointer[config.Config]
+	current.Store(cfg)
 
 	baseCtx, cancelRequests := context.WithCancel(context.Background())
 	defer cancelRequests()
@@ -76,11 +89,28 @@ func run() error {
 		BaseContext:       func(net.Listener) context.Context { return baseCtx },
 	}
 
-	serveErr := make(chan error, 1)
+	serveErr := make(chan error, 2)
 	go func() {
 		log.Info("toll listening", "addr", cfg.Server.Listen, "events", cfg.Events.Output, "instance", cfg.Server.InstanceID)
 		serveErr <- httpServer.ListenAndServe()
 	}()
+
+	var adminServer *http.Server
+	if addr := cfg.Server.AdminAddr(); addr != "" {
+		adminServer = &http.Server{
+			Addr: addr,
+			Handler: admin.New(admin.Options{
+				Metrics: opts.Metrics, Store: st, Config: current.Load, StartedAt: time.Now(), Logger: log,
+			}),
+			ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout,
+			IdleTimeout:       2 * time.Minute,
+		}
+		go func() {
+			log.Info("toll admin listening", "addr", addr, "dashboard", st != nil)
+			serveErr <- adminServer.ListenAndServe()
+		}()
+		defer adminServer.Close()
+	}
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
@@ -91,6 +121,7 @@ func run() error {
 		case sig := <-signals:
 			if sig == syscall.SIGHUP {
 				cfg = reload(log, srv, *configPath, cfg)
+				current.Store(cfg)
 				continue
 			}
 			return shutdown(log, httpServer, srv, cancelRequests, cfg.Server.ShutdownGrace)
@@ -114,8 +145,9 @@ func reload(log *slog.Logger, srv *server.Server, path string, current *config.C
 		next.Server.UpstreamResponseHeaderTimeout != current.Server.UpstreamResponseHeaderTimeout ||
 		next.Events.Output != current.Events.Output || next.Events.Dir != current.Events.Dir ||
 		next.Events.Filename != current.Events.Filename || next.Events.Rotate != current.Events.Rotate ||
-		!reflect.DeepEqual(next.Metering.MetricTags, current.Metering.MetricTags) {
-		log.Warn("config reloaded; listen, instance_id, upstream timeout, events output and metric_tags changes need a restart")
+		!reflect.DeepEqual(next.Metering.MetricTags, current.Metering.MetricTags) ||
+		next.Server.AdminAddr() != current.Server.AdminAddr() || !reflect.DeepEqual(next.Dashboard, current.Dashboard) {
+		log.Warn("config reloaded; listen, admin_listen, instance_id, upstream timeout, events output, metric_tags and dashboard changes need a restart")
 	} else {
 		log.Info("config reloaded")
 	}

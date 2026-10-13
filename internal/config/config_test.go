@@ -24,6 +24,20 @@ func TestDefaults(t *testing.T) {
 	if !c.Metering.InjectsStreamUsage() {
 		t.Fatal("injection must default to on")
 	}
+	if c.Server.AdminAddr() != ":8656" || !c.Dashboard.IsEnabled() || c.Dashboard.Path != "./data/toll.db" ||
+		time.Duration(c.Dashboard.Retention) != 31*24*time.Hour {
+		t.Fatalf("unexpected dashboard defaults %+v %+v", c.Server, c.Dashboard)
+	}
+}
+
+func TestAdminAndDashboard(t *testing.T) {
+	c, err := Parse([]byte("server: { admin_listen: \"\" }\ndashboard: { enabled: false, retention: 7d }"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Server.AdminAddr() != "" || c.Dashboard.IsEnabled() || time.Duration(c.Dashboard.Retention) != 7*24*time.Hour {
+		t.Fatalf("got %+v %+v", c.Server, c.Dashboard)
+	}
 }
 
 func TestLoad(t *testing.T) {
@@ -67,7 +81,6 @@ events:
 
 func TestValidation(t *testing.T) {
 	cases := map[string]string{
-		"reserved name":   "providers: { metrics: { upstream: http://x } }",
 		"bad upstream":    "providers: { foo: { upstream: ftp://x } }",
 		"bad format":      "providers: { foo: { upstream: http://x, format: soap } }",
 		"bad output":      "events: { output: kafka }",
@@ -76,6 +89,10 @@ func TestValidation(t *testing.T) {
 		"unknown field":   "server: { listn: \":1\" }",
 		"bad byte size":   "server: { max_request_body: lots }",
 		"rotate too fast": "events: { rotate: 1s }",
+		"retention long":  "dashboard: { retention: 32d }",
+		"retention short": "dashboard: { retention: 10m }",
+		"bad retention":   "dashboard: { retention: forever }",
+		"same ports":      "server: { listen: \":9000\", admin_listen: \":9000\" }",
 	}
 	for name, yaml := range cases {
 		if _, err := Parse([]byte(yaml)); err == nil {

@@ -1,4 +1,4 @@
-// Package server implements toll's HTTP front end: routing, the metering
+// Package server implements toll's proxy listener: routing, the metering
 // proxy, and event emission.
 package server
 
@@ -36,15 +36,29 @@ type Options struct {
 	Events  events.Writer
 	Metrics *metrics.Metrics
 	Logger  *slog.Logger
+	// Recorder receives a copy of every event for the dashboard. Optional.
+	Recorder Recorder
 	// Transport overrides the upstream transport, mainly for tests.
 	Transport http.RoundTripper
 }
+
+// Recorder keeps a copy of events, such as the dashboard store.
+type Recorder interface {
+	Started(ev events.Started, at time.Time)
+	Completed(ev events.Completed, startedAt time.Time)
+}
+
+type nopRecorder struct{}
+
+func (nopRecorder) Started(events.Started, time.Time)     {}
+func (nopRecorder) Completed(events.Completed, time.Time) {}
 
 // Server is an http.Handler. Its reloadable settings live in an atomically
 // swapped snapshot, so a reload never affects requests already in flight.
 type Server struct {
 	state     atomic.Pointer[state]
 	events    events.Writer
+	recorder  Recorder
 	metrics   *metrics.Metrics
 	log       *slog.Logger
 	transport http.RoundTripper
@@ -73,6 +87,7 @@ type route struct {
 func New(o Options) (*Server, error) {
 	s := &Server{
 		events:    o.Events,
+		recorder:  o.Recorder,
 		metrics:   o.Metrics,
 		log:       o.Logger,
 		transport: o.Transport,
@@ -92,6 +107,9 @@ func New(o Options) (*Server, error) {
 	}
 	if s.log == nil {
 		s.log = slog.Default()
+	}
+	if s.recorder == nil {
+		s.recorder = nopRecorder{}
 	}
 	if err := s.Reload(o.Config); err != nil {
 		return nil, err
@@ -130,16 +148,6 @@ func (s *Server) Reload(c *config.Config) error {
 func (s *Server) Wait() { s.inflight.Wait() }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	switch r.URL.Path {
-	case "/healthz":
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte("ok\n"))
-		return
-	case "/metrics":
-		s.metrics.Handler().ServeHTTP(w, r)
-		return
-	}
-
 	s.inflight.Add(1)
 	defer s.inflight.Done()
 

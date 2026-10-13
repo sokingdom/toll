@@ -4,6 +4,7 @@ package metrics
 
 import (
 	"net/http"
+	"sort"
 	"strconv"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -138,4 +139,80 @@ func (m *Metrics) Inflight(provider string, delta float64) {
 
 func (m *Metrics) WriteError(eventType string) {
 	m.writeErrors.WithLabelValues(eventType).Inc()
+}
+
+// Summary is a snapshot of the request and token counters since the process
+// started, for the dashboard. Tag labels are summed away.
+type Summary struct {
+	Rows         []SummaryRow     `json:"rows"`
+	Status       map[string]int64 `json:"status"`
+	Inflight     int64            `json:"inflight"`
+	UsageMissing int64            `json:"usage_missing"`
+	WriteErrors  int64            `json:"write_errors"`
+}
+
+type SummaryRow struct {
+	Provider string           `json:"provider"`
+	Model    string           `json:"model"`
+	Key      string           `json:"key"`
+	Requests int64            `json:"requests"`
+	Errors   int64            `json:"errors"`
+	Tokens   map[string]int64 `json:"tokens"`
+}
+
+func (m *Metrics) Summary() (Summary, error) {
+	families, err := m.registry.Gather()
+	if err != nil {
+		return Summary{}, err
+	}
+	s := Summary{Status: map[string]int64{}}
+	rows := map[[3]string]*SummaryRow{}
+	row := func(labels map[string]string) *SummaryRow {
+		k := [3]string{labels["provider"], labels["model"], labels["key"]}
+		if rows[k] == nil {
+			rows[k] = &SummaryRow{Provider: k[0], Model: k[1], Key: k[2], Tokens: map[string]int64{}}
+		}
+		return rows[k]
+	}
+	for _, f := range families {
+		for _, metric := range f.GetMetric() {
+			labels := map[string]string{}
+			for _, l := range metric.GetLabel() {
+				labels[l.GetName()] = l.GetValue()
+			}
+			switch f.GetName() {
+			case "toll_requests_total":
+				n := int64(metric.GetCounter().GetValue())
+				r := row(labels)
+				r.Requests += n
+				s.Status[labels["status"]] += n
+				if code, _ := strconv.Atoi(labels["status"]); code < 200 || code > 299 {
+					r.Errors += n
+				}
+			case "toll_tokens_total":
+				row(labels).Tokens[labels["type"]] += int64(metric.GetCounter().GetValue())
+			case "toll_inflight_requests":
+				s.Inflight += int64(metric.GetGauge().GetValue())
+			case "toll_usage_missing_total":
+				s.UsageMissing += int64(metric.GetCounter().GetValue())
+			case "toll_event_write_errors_total":
+				s.WriteErrors += int64(metric.GetCounter().GetValue())
+			}
+		}
+	}
+	s.Rows = make([]SummaryRow, 0, len(rows))
+	for _, r := range rows {
+		s.Rows = append(s.Rows, *r)
+	}
+	sort.Slice(s.Rows, func(i, j int) bool {
+		a, b := s.Rows[i], s.Rows[j]
+		if a.Provider != b.Provider {
+			return a.Provider < b.Provider
+		}
+		if a.Model != b.Model {
+			return a.Model < b.Model
+		}
+		return a.Key < b.Key
+	})
+	return s, nil
 }

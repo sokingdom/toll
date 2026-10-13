@@ -4,6 +4,7 @@ package reqid
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"strings"
 	"time"
 )
 
@@ -21,6 +22,32 @@ func newAt(t time.Time) string {
 	copy(b[:6], ts[2:])
 	_, _ = rand.Read(b[6:])
 	return encode(b)
+}
+
+// Floor returns the smallest ID that New could produce at time t. Because IDs
+// sort by time, "id >= Floor(t)" selects requests received at or after t.
+func Floor(t time.Time) string {
+	var b [16]byte
+	var ts [8]byte
+	binary.BigEndian.PutUint64(ts[:], uint64(t.UnixMilli()))
+	copy(b[:6], ts[2:])
+	return encode(b)
+}
+
+// Time returns the timestamp encoded in id.
+func Time(id string) (time.Time, bool) {
+	if len(id) != 26 {
+		return time.Time{}, false
+	}
+	var ms uint64
+	for i := 0; i < 10; i++ {
+		v := strings.IndexByte(alphabet, id[i])
+		if v < 0 {
+			return time.Time{}, false
+		}
+		ms = ms<<5 | uint64(v)
+	}
+	return time.UnixMilli(int64(ms)), true
 }
 
 // encode writes 128 bits as 26 base32 characters, treating the input as a

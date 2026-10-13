@@ -54,16 +54,37 @@ type upstreamCall struct {
 	body        []byte
 }
 
+// memRecorder counts what the dashboard recorder receives.
+type memRecorder struct {
+	mu        sync.Mutex
+	started   []string
+	completed []events.Completed
+}
+
+func (m *memRecorder) Started(ev events.Started, _ time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.started = append(m.started, ev.RequestID)
+}
+
+func (m *memRecorder) Completed(ev events.Completed, _ time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.completed = append(m.completed, ev)
+}
+
 type harness struct {
 	toll     *httptest.Server
 	events   *memWriter
+	recorder *memRecorder
+	metrics  *metrics.Metrics
 	calls    chan upstreamCall
 	upstream *httptest.Server
 }
 
 func newHarness(t *testing.T, yaml string, handler http.HandlerFunc) *harness {
 	t.Helper()
-	h := &harness{events: &memWriter{}, calls: make(chan upstreamCall, 10)}
+	h := &harness{events: &memWriter{}, recorder: &memRecorder{}, calls: make(chan upstreamCall, 10)}
 	h.upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		h.calls <- upstreamCall{path: r.URL.Path, query: r.URL.RawQuery, header: r.Header.Clone(), body: body}
@@ -78,11 +99,13 @@ func newHarness(t *testing.T, yaml string, handler http.HandlerFunc) *harness {
 		t.Fatal(err)
 	}
 	cfg.Server.InstanceID = "test-1"
+	h.metrics = metrics.New(cfg.Metering.MetricTags)
 	srv, err := New(Options{
-		Config:  cfg,
-		Events:  h.events,
-		Metrics: metrics.New(cfg.Metering.MetricTags),
-		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config:   cfg,
+		Events:   h.events,
+		Metrics:  h.metrics,
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Recorder: h.recorder,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -370,13 +393,9 @@ func TestMetricsEndpoint(t *testing.T) {
 	})
 	h.post(t, "/openai/v1/chat/completions", `{"model":"gpt-4o"}`, map[string]string{"Authorization": "Bearer sk-abc", "X-Toll-Tags": "feature=summary"})
 	h.waitEvents(t, 2)
-	resp, err := http.Get(h.toll.URL + "/metrics")
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	text := string(b)
+	rec := httptest.NewRecorder()
+	h.metrics.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	text := rec.Body.String()
 	for _, want := range []string{
 		`toll_tokens_total{key="k_`,
 		`model="gpt-4o",provider="openai",tag_feature="summary",type="input"} 5`,
@@ -388,5 +407,39 @@ func TestMetricsEndpoint(t *testing.T) {
 	}
 	if strings.Contains(text, "user") && strings.Contains(text, `user="`) {
 		t.Error("user must never be a metric label")
+	}
+}
+
+func TestMetricsSummary(t *testing.T) {
+	h := newHarness(t, "providers: { openai: { upstream: UPSTREAM } }", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"model":"gpt-4o","usage":{"prompt_tokens":5,"completion_tokens":2}}`)
+	})
+	h.post(t, "/openai/v1/chat/completions", `{"model":"gpt-4o"}`, nil)
+	h.post(t, "/openai/v1/chat/completions", `{"model":"gpt-4o"}`, nil)
+	h.waitEvents(t, 4)
+	s, err := h.metrics.Summary()
+	if err != nil || len(s.Rows) != 1 {
+		t.Fatalf("summary %+v, %v", s, err)
+	}
+	r := s.Rows[0]
+	if r.Requests != 2 || r.Errors != 0 || r.Tokens["input"] != 10 || r.Tokens["output"] != 4 || s.Status["200"] != 2 {
+		t.Fatalf("row %+v status %v", r, s.Status)
+	}
+}
+
+func TestRecorderGetsEveryRequest(t *testing.T) {
+	h := newHarness(t, "providers: { openai: { upstream: UPSTREAM } }\nmetering: { require_user: true }", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"model":"gpt-4o","usage":{"prompt_tokens":5,"completion_tokens":2}}`)
+	})
+	h.post(t, "/openai/v1/chat/completions", `{"model":"gpt-4o"}`, map[string]string{"X-Toll-User": "u1"})
+	h.post(t, "/openai/v1/chat/completions", `{"model":"gpt-4o"}`, nil) // rejected: no user
+	h.waitEvents(t, 3)
+	h.recorder.mu.Lock()
+	defer h.recorder.mu.Unlock()
+	if len(h.recorder.started) != 1 || len(h.recorder.completed) != 2 {
+		t.Fatalf("started %v completed %d", h.recorder.started, len(h.recorder.completed))
+	}
+	if !h.recorder.completed[1].Rejected || *h.recorder.completed[0].User != "u1" {
+		t.Fatalf("completed %+v", h.recorder.completed)
 	}
 }

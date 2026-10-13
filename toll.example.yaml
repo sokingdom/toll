@@ -2,7 +2,8 @@
 # defaults unless noted. ${VAR} is replaced with the environment variable.
 
 server:
-  listen: ":8655"
+  listen: ":8655"                       # proxy: your backend calls this
+  admin_listen: ":8656"                 # dashboard, /metrics, /healthz; "" disables. Keep it operator-only
   instance_id: ${HOSTNAME}              # recorded in every event (default: hostname)
   # auth_token: ${TOLL_AUTH_TOKEN}      # if set, callers must send X-Toll-Auth
   max_request_body: 32MiB
@@ -34,3 +35,10 @@ events:
   filename: "events-{instance}-{time}.jsonl"
   rotate: 1h
   on_write_error: fail_open             # fail_open | fail_closed
+
+# Built-in dashboard at http://<admin_listen>/dashboard/. Recent requests are
+# kept in an embedded SQLite file, a disposable copy of the events.
+dashboard:
+  enabled: true
+  path: ./data/toll.db
+  retention: 31d                        # 1h to 31d. Roughly 250 MB per 500k requests per day

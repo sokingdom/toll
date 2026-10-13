@@ -26,3 +26,19 @@ func TestOrdering(t *testing.T) {
 		t.Fatalf("ids not time-ordered: %s %s", a, b)
 	}
 }
+
+func TestFloorAndTime(t *testing.T) {
+	at := time.UnixMilli(1_760_000_000_123)
+	id := newAt(at)
+	floor := Floor(at)
+	if floor > id || Floor(at.Add(time.Millisecond)) <= id {
+		t.Fatalf("floor %s does not bound %s", floor, id)
+	}
+	got, ok := Time(id)
+	if !ok || !got.Equal(at) {
+		t.Fatalf("Time(%s) = %v, %v", id, got, ok)
+	}
+	if _, ok := Time("not-an-id"); ok {
+		t.Fatal("invalid id accepted")
+	}
+}

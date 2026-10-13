@@ -11,12 +11,14 @@ so you can see who is spending what without touching your application code.
 ```
 [app backend] ──▶ toll ──▶ OpenAI / Anthropic / Gemini / xAI / vLLM …
                    │
-                   ├─▶ events-*.jsonl   per-request usage, per end user
-                   └─▶ /metrics         Prometheus, per model and key
+                   ├─▶ events-*.jsonl   per-request usage, per end user (record of truth)
+                   ├─▶ :8656/dashboard  built-in dashboard, per end user
+                   └─▶ :8656/metrics    Prometheus, per model and key
 ```
 
 - **Drop-in.** Native provider APIs. Point your SDK's `base_url` at toll and add one header.
-- **Stateless.** No database, no shared state, no stored secrets. Provider keys pass straight through.
+- **Single binary.** No external database, no shared state, no stored secrets. Provider keys pass straight through.
+- **Built-in dashboard.** Look up any end user's usage by day, week or custom range, browse recent requests, and spot in-flight and lost requests.
 - **Per-user visibility.** Usage is attributed to the end user from `X-Toll-User` or the provider's own user field.
 - **Loss is visible.** Every request gets a `request.started` and a `request.completed` event, so a crash shows up as an unmatched start instead of silently disappearing.
 
@@ -34,16 +36,21 @@ cd toll
 go run ./cmd/toll
 ```
 
-toll listens on `:8655` and works without a config file. OpenAI, Anthropic,
-Gemini and xAI are built in.
+toll works without a config file. OpenAI, Anthropic, Gemini and xAI are built in.
+
+| Port | Serves | Who should reach it |
+|---|---|---|
+| `8655` | The proxy | Your backend |
+| `8656` | Dashboard, `/metrics`, `/healthz` | Operators only |
 
 Or with Docker:
 
 ```sh
 docker build -f deploy/Dockerfile -t toll .
 printf 'events: { output: stdout }\n' > toll.yaml
-docker run --rm -p 8655:8655 \
+docker run --rm -p 8655:8655 -p 8656:8656 \
   -v "$PWD/toll.yaml:/etc/toll/toll.yaml:ro" -e TOLL_CONFIG=/etc/toll/toll.yaml \
+  -v toll-data:/home/nonroot/data \
   toll
 ```
 
@@ -87,6 +94,8 @@ client.messages.create(
 
 ### 3. See the usage
 
+Open the dashboard at `http://localhost:8656/dashboard/`.
+
 Events are written to `./events/` as JSON lines, one file per hour. A completed event looks like this (abridged):
 
 ```sh
@@ -101,7 +110,7 @@ tail -f events/*.jsonl
  "cache_write_tokens":0,"output_tokens":240,"reasoning_tokens":0,"latency_ms":1830,"ttfb_ms":412}
 ```
 
-Aggregates per model and key are at `http://localhost:8655/metrics`.
+Prometheus metrics per model and key are at `http://localhost:8656/metrics`.
 
 ## How it works
 
@@ -114,7 +123,6 @@ Aggregates per model and key are at `http://localhost:8655/metrics`.
 | `/gemini/*` | `https://generativelanguage.googleapis.com` |
 | `/xai/*` | `https://api.x.ai` |
 | `/<name>/*` | any OpenAI-compatible server you configure (vLLM, Ollama, …) |
-| `/metrics`, `/healthz` | Prometheus metrics, health check |
 
 ### Metered endpoints
 
@@ -153,6 +161,29 @@ toll never stores keys. It records a fingerprint (`k_` + first 12 hex chars of
 SHA-256) and the last four characters. Name fingerprints with `key_aliases` to
 get readable labels in metrics.
 
+### Dashboard
+
+The admin port (`8656`) serves a dashboard built into the binary:
+
+| Page | Shows | Source |
+|---|---|---|
+| Overview | Requests, errors and tokens by provider, model, key and status, since toll started | In-memory counters |
+| | In-flight requests, and lost requests that started but never completed | Store |
+| Requests | Recent requests, newest first, filterable by user, provider, model and status | Store |
+| Users | One end user's usage by day, week or a custom range of up to 31 days, by model and over time | Store |
+| Config | The running configuration, without secrets | Config |
+
+The store is an embedded SQLite file (`./data/toll.db`) holding one row per
+request for the last 31 days by default. Writes are batched every second off
+the request path, so a slow or failed store never affects proxying, and rows
+past `dashboard.retention` are deleted automatically. It is a disposable copy:
+deleting the file loses nothing that the event files do not have. At 500k
+requests a day, 31 days take about 7.5 GB; shorten the retention if that is
+too much.
+
+Each toll instance has its own dashboard and store. To see usage across
+instances or beyond 31 days, use the event files.
+
 ### Costs
 
 toll records tokens, not money. Multiply the token fields by your price table
@@ -186,10 +217,11 @@ is replaced from the environment, and `SIGHUP` reloads the file.
 - [x] `request.started` / `request.completed` events to file or stdout, with rotation
 - [x] Prometheus metrics
 - [x] Config reload and graceful shutdown
+- [x] Built-in dashboard with per-user usage, recent requests and lost-request detection
 
 **Next**
 
-- [ ] Reference stack: Vector, ClickHouse and Grafana with per-user, per-model and per-key dashboards and an example price table
+- [ ] Grafana dashboard for the Prometheus metrics
 - [ ] Verification against live provider APIs
 - [ ] Published container image and release binaries
 

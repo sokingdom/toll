@@ -32,10 +32,12 @@ type Config struct {
 	Metering   Metering            `yaml:"metering"`
 	KeyAliases map[string]string   `yaml:"key_aliases"`
 	Events     Events              `yaml:"events"`
+	Dashboard  Dashboard           `yaml:"dashboard"`
 }
 
 type Server struct {
 	Listen                        string        `yaml:"listen"`
+	AdminListen                   *string       `yaml:"admin_listen"`
 	InstanceID                    string        `yaml:"instance_id"`
 	AuthToken                     string        `yaml:"auth_token"`
 	MaxRequestBody                ByteSize      `yaml:"max_request_body"`
@@ -68,6 +70,29 @@ type Events struct {
 	OnWriteError string        `yaml:"on_write_error"`
 }
 
+// AdminAddr is the admin listener address (dashboard, API, metrics,
+// health). Empty means the admin listener is disabled.
+func (s Server) AdminAddr() string {
+	if s.AdminListen == nil {
+		return ""
+	}
+	return *s.AdminListen
+}
+
+type Dashboard struct {
+	Enabled   *bool    `yaml:"enabled"`
+	Path      string   `yaml:"path"`
+	Retention Duration `yaml:"retention"`
+}
+
+// MaxRetention bounds how long the dashboard keeps individual requests.
+const MaxRetention = 31 * 24 * time.Hour
+
+// IsEnabled reports whether the dashboard is on (default true).
+func (d Dashboard) IsEnabled() bool {
+	return d.Enabled == nil || *d.Enabled
+}
+
 // builtinProviders are always available and may be overridden in the config.
 var builtinProviders = map[string]Provider{
 	"openai":    {Upstream: "https://api.openai.com", Format: FormatOpenAI},
@@ -80,7 +105,6 @@ var (
 	envRef       = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 	providerName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 	tagKey       = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
-	reserved     = map[string]bool{"metrics": true, "healthz": true}
 )
 
 // Load reads the file at path. An empty path yields the defaults.
@@ -117,6 +141,10 @@ func (c *Config) applyDefaults() {
 	s := &c.Server
 	if s.Listen == "" {
 		s.Listen = ":8655"
+	}
+	if s.AdminListen == nil {
+		addr := ":8656"
+		s.AdminListen = &addr
 	}
 	if s.InstanceID == "" {
 		s.InstanceID, _ = os.Hostname()
@@ -169,12 +197,20 @@ func (c *Config) applyDefaults() {
 	if e.OnWriteError == "" {
 		e.OnWriteError = FailOpen
 	}
+
+	d := &c.Dashboard
+	if d.Path == "" {
+		d.Path = "./data/toll.db"
+	}
+	if d.Retention == 0 {
+		d.Retention = Duration(MaxRetention)
+	}
 }
 
 func (c *Config) validate() error {
 	for _, name := range sortedKeys(c.Providers) {
 		p := c.Providers[name]
-		if !providerName.MatchString(name) || reserved[name] {
+		if !providerName.MatchString(name) {
 			return fmt.Errorf("providers: invalid name %q", name)
 		}
 		u, err := url.Parse(p.Upstream)
@@ -207,6 +243,12 @@ func (c *Config) validate() error {
 	}
 	if c.Server.MaxRequestBody < 0 {
 		return fmt.Errorf("server.max_request_body: must be positive")
+	}
+	if r := time.Duration(c.Dashboard.Retention); r < time.Hour || r > MaxRetention {
+		return fmt.Errorf("dashboard.retention: must be between 1h and 31d")
+	}
+	if c.Server.AdminAddr() != "" && c.Server.AdminAddr() == c.Server.Listen {
+		return fmt.Errorf("server.admin_listen: must differ from server.listen")
 	}
 	return nil
 }
@@ -250,4 +292,32 @@ func ParseByteSize(s string) (int64, error) {
 		return 0, fmt.Errorf("invalid byte size %q", s)
 	}
 	return n * mult, nil
+}
+
+// Duration accepts Go durations ("90m", "12h") plus whole days ("31d").
+type Duration time.Duration
+
+func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
+	v, err := ParseDuration(node.Value)
+	if err != nil {
+		return err
+	}
+	*d = Duration(v)
+	return nil
+}
+
+func ParseDuration(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if days, ok := strings.CutSuffix(s, "d"); ok {
+		n, err := strconv.Atoi(days)
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("invalid duration %q", s)
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	}
+	v, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q", s)
+	}
+	return v, nil
 }
