@@ -116,7 +116,7 @@ func Parse(raw []byte) (*Config, error) {
 func (c *Config) applyDefaults() {
 	s := &c.Server
 	if s.Listen == "" {
-		s.Listen = ":8080"
+		s.Listen = ":8655"
 	}
 	if s.InstanceID == "" {
 		s.InstanceID, _ = os.Hostname()

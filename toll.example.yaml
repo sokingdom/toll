@@ -2,7 +2,7 @@
 # defaults unless noted. ${VAR} is replaced with the environment variable.
 
 server:
-  listen: ":8080"
+  listen: ":8655"
   instance_id: ${HOSTNAME}              # recorded in every event (default: hostname)
   # auth_token: ${TOLL_AUTH_TOKEN}      # if set, callers must send X-Toll-Auth
   max_request_body: 32MiB

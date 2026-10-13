@@ -1,8 +1,10 @@
-# toll
+<h1 align="center">
+  <img src="assets/toll-logo.png" alt="toll" width="360">
+</h1>
 
-**A stateless egress gateway for B2C AI services.**
+<p align="center"><b>A stateless egress gateway for AI services.</b></p>
 
-toll sits between your backend and LLM providers. It passes every request
+**toll** sits between your backend and LLM providers. It passes every request
 through unchanged and records **token usage per end user, API key and model**,
 so you can see who is spending what without touching your application code.
 
@@ -32,7 +34,7 @@ cd toll
 go run ./cmd/toll
 ```
 
-toll listens on `:8080` and works without a config file. OpenAI, Anthropic,
+toll listens on `:8655` and works without a config file. OpenAI, Anthropic,
 Gemini and xAI are built in.
 
 Or with Docker:
@@ -40,7 +42,7 @@ Or with Docker:
 ```sh
 docker build -f deploy/Dockerfile -t toll .
 printf 'events: { output: stdout }\n' > toll.yaml
-docker run --rm -p 8080:8080 \
+docker run --rm -p 8655:8655 \
   -v "$PWD/toll.yaml:/etc/toll/toll.yaml:ro" -e TOLL_CONFIG=/etc/toll/toll.yaml \
   toll
 ```
@@ -50,7 +52,7 @@ docker run --rm -p 8080:8080 \
 Change the base URL and tell toll who the end user is. Everything else stays the same.
 
 ```sh
-curl http://localhost:8080/openai/v1/chat/completions \
+curl http://localhost:8655/openai/v1/chat/completions \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -H "Content-Type: application/json" \
   -H "X-Toll-User: user_8f3a21" \
@@ -63,7 +65,7 @@ With an SDK:
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8080/openai/v1")  # key still comes from OPENAI_API_KEY
+client = OpenAI(base_url="http://localhost:8655/openai/v1")  # key still comes from OPENAI_API_KEY
 client.chat.completions.create(
     model="gpt-4o-mini",
     messages=[{"role": "user", "content": "Hello"}],
@@ -74,7 +76,7 @@ client.chat.completions.create(
 ```python
 from anthropic import Anthropic
 
-client = Anthropic(base_url="http://localhost:8080/anthropic")
+client = Anthropic(base_url="http://localhost:8655/anthropic")
 client.messages.create(
     model="claude-haiku-4-5",
     max_tokens=256,
@@ -99,7 +101,7 @@ tail -f events/*.jsonl
  "cache_write_tokens":0,"output_tokens":240,"reasoning_tokens":0,"latency_ms":1830,"ttfb_ms":412}
 ```
 
-Aggregates per model and key are at `http://localhost:8080/metrics`.
+Aggregates per model and key are at `http://localhost:8655/metrics`.
 
 ## How it works
 

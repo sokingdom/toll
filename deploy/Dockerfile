@@ -7,5 +7,5 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/toll ./cmd/toll
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/toll /toll
-EXPOSE 8080
+EXPOSE 8655
 ENTRYPOINT ["/toll"]

@@ -13,7 +13,7 @@ func TestDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Server.Listen != ":8080" || c.Server.MaxRequestBody != 32<<20 || c.Events.OnWriteError != FailOpen || c.Events.Output != OutputFile {
+	if c.Server.Listen != ":8655" || c.Server.MaxRequestBody != 32<<20 || c.Events.OnWriteError != FailOpen || c.Events.Output != OutputFile {
 		t.Fatalf("unexpected defaults %+v", c)
 	}
 	for _, name := range []string{"openai", "anthropic", "gemini", "xai"} {
